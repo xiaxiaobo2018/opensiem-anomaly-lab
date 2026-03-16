@@ -10,4 +10,5 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 !data/processed/cicids_sample_clean.csv
+!data/processed/cicids_sample_features.csv
 !data/README.md
