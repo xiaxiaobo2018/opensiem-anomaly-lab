@@ -1,6 +1,6 @@
 # OpenSIEM Anomaly Lab
 
-A public cybersecurity/ML portfolio project for anomaly detection on public SIEM-like datasets.
+A public cybersecurity/ML portfolio project for anomaly detection on public SIEM-like datasets. (Inspired by my internship)
 
 ## Goals
 - Build a reproducible anomaly detection pipeline
