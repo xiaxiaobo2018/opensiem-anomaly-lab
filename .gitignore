@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .DS_Store
 .ipynb_checkpoints/
+outputs/*.png
+outputs/*.html
+models/
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
