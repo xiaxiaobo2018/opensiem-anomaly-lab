@@ -1326,6 +1326,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
+    { name = "ipython" },
     { name = "jupyter" },
     { name = "matplotlib" },
     { name = "pandas" },
@@ -1338,6 +1339,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.7.0" },
+    { name = "ipython", specifier = ">=9.11.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "pandas", specifier = ">=3.0.1" },

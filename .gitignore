@@ -12,3 +12,10 @@ data/processed/*
 !data/processed/cicids_sample_clean.csv
 !data/processed/cicids_sample_features.csv
 !data/README.md
+
+# Local datasets and generated artifacts
+AnoMod.zip
+data/
+*.zip
+*.csv
+*.log
