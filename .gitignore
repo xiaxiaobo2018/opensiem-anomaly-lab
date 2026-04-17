@@ -19,3 +19,10 @@ data/
 *.zip
 *.csv
 *.log
+
+# Local AI tooling / Vertex AI experiments
+node_modules/
+package.json
+package-lock.json
+test-vertex.ts
+test_vertex.py

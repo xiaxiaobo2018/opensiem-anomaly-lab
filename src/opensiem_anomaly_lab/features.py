@@ -1,36 +1,44 @@
+from __future__ import annotations
+
+import numpy as np
 import pandas as pd
 
+from opensiem_anomaly_lab.ingestion import normalize_column_name
 
-TARGET_COLUMNS = [
-    "label",
-    "attempted_category",
-]
 
-IDENTIFIER_COLUMNS = [
-    "src_ip_dec",
-    "src_port",
-    "dst_ip_dec",
-    "dst_port",
+METADATA_COLUMNS = [
+    "scenario_name",
+    "fault_label",
+    "fault_family",
+    "fault_type",
+    "is_anomaly",
     "timestamp",
 ]
 
-
-def drop_known_non_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    cols_to_drop = [col for col in TARGET_COLUMNS + IDENTIFIER_COLUMNS if col in df.columns]
-    return df.drop(columns=cols_to_drop)
+AGGREGATION_FUNCTIONS = ["mean", "std", "min", "max"]
 
 
-def keep_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
-    return df.select_dtypes(include=["number"]).copy()
+def prepare_feature_dataframe(metric_df: pd.DataFrame) -> pd.DataFrame:
+    grouped = (
+        metric_df.groupby(METADATA_COLUMNS + ["metric_name"], dropna=False)["value"]
+        .agg(AGGREGATION_FUNCTIONS)
+        .reset_index()
+    )
 
+    feature_df = grouped.pivot_table(
+        index=METADATA_COLUMNS,
+        columns="metric_name",
+        values=AGGREGATION_FUNCTIONS,
+        fill_value=0,
+    )
 
-def fill_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    return df.fillna(0)
+    feature_df.columns = [
+        f"{stat}__{normalize_column_name(metric_name)}"
+        for stat, metric_name in feature_df.columns.to_flat_index()
+    ]
+    feature_df = feature_df.reset_index()
 
+    numeric_columns = [column for column in feature_df.columns if column not in METADATA_COLUMNS]
+    feature_df[numeric_columns] = feature_df[numeric_columns].replace([np.inf, -np.inf], np.nan).fillna(0)
 
-def prepare_feature_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    df = drop_known_non_feature_columns(df)
-    df = keep_numeric_columns(df)
-    df = fill_missing_values(df)
-    return df
+    return feature_df.sort_values(["scenario_name", "timestamp"]).reset_index(drop=True)

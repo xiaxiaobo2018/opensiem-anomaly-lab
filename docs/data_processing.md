@@ -2,332 +2,174 @@
 
 ## Purpose
 
-This document explains the **data transformation decisions** used in OpenSIEM Anomaly Lab.
+This document explains the baseline data workflow used in OpenSIEM Anomaly Lab for the `AnoMod` dataset.
 
-It focuses on:
+The first baseline focuses on:
 
-- how the raw dataset is ingested into the project workflow
-- how the data is cleaned and normalized
-- how the first model-ready feature set is created
-- why specific columns are dropped or retained
-
----
+- using a local metric cache for fast iteration, with GCS as fallback
+- discovering scenario-level metric files
+- building timestamp-level feature vectors from Prometheus-style metrics
+- training a first unsupervised anomaly detector
+- evaluating how well anomalous scenarios separate from the normal run
 
 ## Current Workflow Overview
 
-The current data workflow has two main stages:
+The current baseline has four stages:
 
-1. **Ingestion**
+1. `scripts/ingest_anomod.py`
+   - discover local cached metric CSVs first, or fall back to GCS
+   - build a manifest of scenario labels
+2. `scripts/sync_anomod_metrics_from_gcs.py`
+   - refresh the local metric cache from GCS when needed
+3. `scripts/prepare_features.py`
+   - read metric CSVs scenario by scenario
+   - aggregate repeated metric series at each timestamp
+   - pivot the metrics into a model-ready feature table
+4. `scripts/train.py`
+   - train an `IsolationForest` on normal windows only
+5. `scripts/evaluate.py`
+   - score held-out normal windows and all anomalous windows
+   - save metrics and per-scenario anomaly summaries
 
-   - load CICIDS-2017 from Hugging Face
-   - convert to pandas
-   - normalize column names
-   - replace infinite values with missing values
-   - save cleaned outputs
-2. **Feature preparation**
+## AnoMod Input Assumptions
 
-   - remove label and identifier/context columns
-   - keep numeric features only
-   - fill missing values
-   - save a model-ready feature table
+The baseline currently uses `TT_data/metric_data/*/*.csv` from either:
 
----
+- local cache: `data/raw/anomod/TT_data/metric_data/`
+- `gs://opensiem-data-xia0b0/raw/anomod`
 
-## Dataset Snapshot
+Each scenario folder represents one run, such as:
 
-The current ingestion pipeline loads the public `bvk/CICIDS-2017` dataset.
+- `Normal_case_em_...`
+- `Lv_P_CPU_preserve_...`
+- `Lv_D_TRANSACTION_timeout_...`
 
-Observed full dataset shape at ingestion time:
-
-- **Rows:** 2,099,971
-- **Columns:** 89
-
-The dataset contains:
-
-- routing/context fields such as source/destination IPs and ports
-- flow-level statistical features
-- protocol/flag features
-- a `label` column for known traffic class
-- an `attempted_category` field
-
----
+The metric CSVs contain repeated measurements for metric names such as CPU, memory, network, and container health indicators.
 
 ## Ingestion Decisions
 
-### 1. Programmatic loading
+### 1. Use scenario folders as labels
 
-The dataset is loaded programmatically instead of being manually stored inside the repository.
+AnoMod already encodes run-level context in folder names.
 
-### Why
+The baseline converts that into:
 
-- keeps the repo lightweight
-- avoids committing large raw data files
-- makes the pipeline reproducible from code
+- `is_anomaly`
+- `fault_family`
+- `fault_type`
+- `fault_label`
 
----
+`Normal_case...` is treated as normal traffic. All `Lv_*` runs are treated as anomalous.
 
-### 2. Column-name normalization
+### 2. Use a hybrid raw-data setup
 
-Original dataset column names contain spaces, mixed case, and symbols such as `/`.
+The raw AnoMod metric files are treated this way:
 
-During ingestion, column names are normalized into lowercase snake_case.
+- local cache for normal development runs
+- GCS as canonical backup and fallback
 
-### Rules used
+The pipeline prefers local files whenever they exist.
 
-- trim whitespace
-- convert to lowercase
-- replace `/` with `_per_`
-- replace `-` with `_`
-- replace non-word characters with `_`
-- collapse repeated underscores
+Why:
 
-### Examples
+- avoids keeping multi-gigabyte raw data on the laptop
+- keeps development fast once the cache exists
+- keeps the dataset location stable across machines
+- makes it easier to move preprocessing or training onto cloud compute later
 
-| Original               | Normalized             |
-| ---------------------- | ---------------------- |
-| `Src IP dec`         | `src_ip_dec`         |
-| `Flow Bytes/s`       | `flow_bytes_per_s`   |
-| `Attempted Category` | `attempted_category` |
+### 3. Focus on metric data first
 
----
+AnoMod also contains traces, logs, API responses, and coverage artifacts.
 
-### 3. Infinite-value handling
+The first local baseline intentionally uses only metrics because they are:
 
-Some numerical flow features can contain positive or negative infinity.
+- structured
+- lightweight enough for local iteration
+- already aligned to anomaly detection
 
-Current rule:
-
-- replace `np.inf` and `-np.inf` with `NaN`
-
-### Why
-
-Most downstream ML workflows cannot reliably use infinite values directly.
-Replacing infinities early makes later preprocessing more predictable.
-
----
-
-### 4. Output strategy
-
-The ingestion stage currently writes two outputs:
-
-- `data/processed/cicids_sample_clean.csv`
-- `data/processed/cicids_full_clean.parquet`
-
-### Why keep both
-
-#### Sample CSV
-
-Used for:
-
-- fast inspection
-- quick testing
-- lightweight EDA
-- easy repo-visible example data
-
-#### Full Parquet
-
-Used for:
-
-- larger-scale model development
-- more efficient storage and reading than CSV
-- full dataset experimentation
-
----
-
-## Sampling Decision
-
-A 5,000-row random sample is generated from the cleaned full dataset.
-
-### Current sampling policy
-
-- sample size: **5000**
-- random seed: **42**
-
-### Why
-
-A smaller sample helps with:
-
-- quicker iteration
-- easier debugging
-- faster notebook work
-- lower friction during early feature and model prototyping
-
-The sample is not intended to replace the full dataset, only to speed up early development.
-
----
+This keeps the first model simple and reproducible.
 
 ## Feature Preparation Decisions
 
-The first feature-preparation stage is intentionally conservative.
+### 1. One observation per scenario timestamp
 
-The goal is to create a clean baseline feature table for unsupervised anomaly detection.
+The raw CSVs contain many rows per timestamp because each metric can appear across multiple series and labels.
 
-### Current principle
+To build a baseline table, the pipeline groups by:
 
-Focus on **behavioral numeric flow features**, not direct identifiers.
+- scenario metadata
+- timestamp
+- metric name
 
----
+Then it computes:
 
-## Columns excluded from the first baseline
+- `mean`
+- `std`
+- `min`
+- `max`
 
-### 1. Evaluation fields
+for each metric at that timestamp.
 
-The following columns are dropped before feature generation:
+### 2. Pivot metric summaries into columns
 
-- `label`
-- `attempted_category`
+After aggregation, the pipeline pivots the data so each row becomes one timestamp window and each feature column becomes a `stat__metric_name` pair.
 
-### Why
+Examples:
 
-These fields describe known attack/traffic outcomes or metadata and are useful for **evaluation**, not for unsupervised feature input.
+- `mean__container_memory_usage_bytes`
+- `max__node_network_receive_bytes_total`
+- `std__rate_node_cpu_seconds_total_5m`
 
-Including them would create leakage and undermine the anomaly-detection objective.
+Missing values are filled with `0` after the pivot step.
 
----
+## Modeling Decisions
 
-### 2. Identifier and context fields
+### 1. Unsupervised first model
 
-The following columns are also dropped in the first feature baseline:
+The first baseline uses `IsolationForest`.
 
-- `src_ip_dec`
-- `src_port`
-- `dst_ip_dec`
-- `dst_port`
-- `timestamp`
+Why:
 
-### Why
+- it matches the anomaly-detection framing
+- it does not require multiclass supervised labels
+- it gives a simple starting point before trying more specialized models
 
-These columns are excluded in the first version because they act more like:
+### 2. Train only on normal windows
 
-- identifiers
-- routing context
-- environment-specific address information
+The normal scenario is sorted by timestamp and split chronologically:
 
-Using them too early can lead the model to:
+- first 70% for training
+- remaining 30% for evaluation
 
-- memorize endpoints
-- overfit to specific IP/port patterns
-- learn shortcuts instead of traffic behavior
+All anomalous scenario windows are included in evaluation only.
 
-This does not mean these columns are useless forever. They may be reintroduced later through engineered features or grouped behavioral summaries.
+This gives a simple baseline for answering:
 
----
+- can the model learn the normal metric profile?
+- do anomalous runs drift away from that profile?
 
-## Columns retained in the first baseline
+## Outputs
 
-After dropping known non-feature columns, the first baseline keeps **numeric columns only**.
+The current pipeline writes:
 
-These include categories such as:
+- `data/processed/anomod_metric_manifest.csv`
+- `data/processed/anomod_metric_features.csv`
+- `data/processed/anomod_isolation_forest.joblib`
+- `data/processed/anomod_train_scores.csv`
+- `data/processed/anomod_evaluation_scores.csv`
+- `data/processed/anomod_scenario_summary.csv`
+- `data/processed/anomod_evaluation_metrics.json`
 
-- flow duration
-- packet counts
-- byte counts
-- packet-length statistics
-- packets-per-second and bytes-per-second
-- inter-arrival time statistics
-- TCP/flag counters
-- active/idle timing features
-- packet/segment size summaries
-- ratio-style numeric fields
+## Caveats
 
-### Why
+This is a true baseline, not the final intended pipeline.
 
-These features better represent traffic behavior and are more appropriate for a first anomaly-detection baseline.
+Known simplifications:
 
----
+- processed outputs are still local
+- only metric data is used
+- labels come from scenario folders, not fault onset timestamps
+- the model does not yet explain anomalies
+- traces, logs, and root-cause annotations are not yet fused in
 
-## Missing-value policy
-
-Current baseline rule:
-
-- fill missing values with `0`
-
-### Why this was chosen
-
-This is a simple and reproducible starting point for the first model iteration.
-
-It allows:
-
-- the feature matrix to be used directly by baseline ML models
-- easy script-based preprocessing
-- minimal early complexity
-
-### Caveat
-
-This is a baseline rule, not necessarily the final best practice.
-Later versions may use:
-
-- median imputation
-- feature-specific imputation
-- missingness indicators
-
----
-
-## Current Feature Philosophy
-
-The first anomaly-detection baseline is designed to answer:
-
-> Can behavioral flow statistics alone separate suspicious traffic from normal traffic reasonably well?
-
-That is why the initial feature policy is intentionally simple:
-
-- remove labels
-- remove direct identifiers
-- keep numeric flow behavior
-- fill missing values
-- generate a clean feature table
-
-This gives the project a clearer baseline before introducing more complex feature engineering.
-
----
-
-## Files produced by the current processing pipeline
-
-### Ingestion stage
-
-- `data/processed/cicids_sample_clean.csv`
-- `data/processed/cicids_full_clean.parquet`
-
-### Feature-preparation stage
-
-- `data/processed/cicids_sample_features.csv`
-
-Potential future output:
-
-- `data/processed/cicids_full_features.parquet`
-
----
-
-## Current limitations
-
-The current data-processing pipeline is intentionally minimal.
-
-Not yet implemented:
-
-- timestamp parsing into engineered time features
-- feature scaling/normalization
-- constant-column filtering
-- sparse-column filtering
-- train/test split policy
-- endpoint aggregation features
-- session/user/entity baselines
-- dimensionality reduction
-- advanced imputation strategy
-
-These are expected to be added incrementally after the first anomaly baseline is working.
-
----
-
-## Rationale Summary
-
-The current data-processing design tries to balance:
-
-- simplicity
-- reproducibility
-- interpretability
-- reasonable anti-leakage discipline
-
-The project does **not** attempt to build the most complex preprocessing pipeline first.
-Instead, it starts with a clean and explainable baseline that can be improved step by step.
-
----
+Those are good next steps once the baseline is stable.
