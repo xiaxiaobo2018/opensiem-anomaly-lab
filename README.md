@@ -56,6 +56,55 @@ uv run scripts/sync_anomod_metrics_from_gcs.py
 - SHAP
 - pytest
 
+## Week 2 Log Retrieval
+
+The repo now includes a first local retrieval layer over `AnoMod` `TT_data/log_data`.
+
+It builds a searchable corpus from service logs plus Kubernetes event JSON, then uses local latent-semantic vectors to return the most relevant chunks for a query.
+
+Build the log index:
+
+```bash
+uv run scripts/build_log_search_index.py
+```
+
+Query it:
+
+```bash
+uv run scripts/search_logs.py "TokenException token expired"
+uv run scripts/search_logs.py "connection pool exhaustion database timeout" --top-k 8
+uv run scripts/search_logs.py "Readiness probe failed i/o timeout" --source-type kubernetes_event
+```
+
+Artifacts are written to `data/processed/`.
+See `docs/log_retrieval.md` for details.
+
+## Week 3 Anomaly Explanations
+
+The repo now includes a first RAG-style explanation layer.
+
+It takes scored anomalous scenarios, retrieves supporting log evidence from the Week 2 search index, and sends that context to Gemini on Vertex AI for a plain-English explanation.
+
+Build the retrieval index first:
+
+```bash
+uv run scripts/build_log_search_index.py
+```
+
+Run evaluation with explanations enabled:
+
+```bash
+uv run scripts/evaluate.py --with-explanations
+```
+
+Or rerun only the explanation step:
+
+```bash
+uv run scripts/explain_anomalies.py --top-k-scenarios 3 --retrieval-top-k 6
+```
+
+See `docs/anomaly_explanations.md` for details.
+
 ## Baseline Pipeline
 
 Run the first local baseline end to end with:
@@ -73,11 +122,18 @@ Artifacts are written to `data/processed/`.
 
 ## Current Status
 
-The repository now has a first local baseline for AnoMod metric anomaly detection:
+The repository now has:
+
+- a first local baseline for AnoMod metric anomaly detection
+- a first local semantic-search layer over AnoMod logs
+- a first LLM-backed anomaly explanation workflow over retrieved log evidence
 
 - ingestion builds a scenario manifest from the local metric cache when available, otherwise from GCS
 - feature preparation converts metric timestamps into model-ready feature vectors
 - training fits an `IsolationForest` on normal windows
 - evaluation scores anomalous runs and writes metrics plus per-scenario summaries
+- log retrieval builds searchable chunks from `TT_data/log_data`
+- semantic search returns relevant log and Kubernetes-event evidence for fault-oriented queries
+- explanation generation retrieves scenario evidence and writes plain-English anomaly summaries via Gemini on Vertex AI
 
 The next major step is to enrich the baseline with traces, logs, root-cause signals, and model interpretation.
